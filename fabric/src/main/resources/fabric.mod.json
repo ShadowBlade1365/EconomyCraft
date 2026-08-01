@@ -3,6 +3,7 @@
   "id": "economycraft",
   "version": "${version}",
   "name": "EconomyCraft",
+  "icon": "assets/economycraft/logo.png",
   "description": "Simple server-side economy and shop mod.",
   "authors": ["ReaZip"],
   "license": "MIT",

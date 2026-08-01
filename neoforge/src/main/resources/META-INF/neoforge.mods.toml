@@ -7,6 +7,7 @@ modId = "economycraft"
 version = "${version}"
 displayName = "EconomyCraft"
 authors = "ReaZip"
+logoFile = "assets/economycraft/logo.png"
 description = '''
 Simple server-side economy and shop mod.
 '''
