@@ -73,8 +73,15 @@ public class OrderManager {
             try {
                 String json = Files.readString(file);
                 JsonObject root = GSON.fromJson(json, JsonObject.class);
-                nextId = root.get("nextId").getAsInt();
-                for (var el : root.getAsJsonArray("requests")) {
+                if (root == null) return;
+
+                if (root.has("nextId")) {
+                    nextId = root.get("nextId").getAsInt();
+                }
+                JsonArray savedRequests = root.has("requests")
+                        ? root.getAsJsonArray("requests")
+                        : new JsonArray();
+                for (var el : savedRequests) {
                     try {
                         OrderRequest r = OrderRequest.load(el.getAsJsonObject(), server.registryAccess());
                         if (r.item == null || r.item.isEmpty()) {

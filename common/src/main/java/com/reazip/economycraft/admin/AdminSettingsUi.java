@@ -57,7 +57,8 @@ public final class AdminSettingsUi {
         SHOP(20, "Player Shop", "The marketplace players list their own items on."),
         ORDERS(21, "Orders", "The request board players post wanted items on."),
         SELL(22, "Selling", "The /sell menu and right-click selling."),
-        SCOREBOARD(23, "Balance Sidebar", "The balance leaderboard on the right."),
+        WORTH(23, "Item Values", "The /worth command and Item Value menu."),
+        SCOREBOARD(16, "Balance Sidebar", "The balance leaderboard on the right."),
         STANDALONE(24, "Short Commands", "Allow /pay and /shop without the /eco prefix."),
         STANDALONE_ADMIN(25, "Short Admin Commands", "Allow /addmoney without the /eco prefix.");
 
@@ -119,6 +120,7 @@ public final class AdminSettingsUi {
             toggle(Setting.SHOP, config.shopEnabled);
             toggle(Setting.ORDERS, config.ordersEnabled);
             toggle(Setting.SELL, config.sellEnabled);
+            toggle(Setting.WORTH, config.worthEnabled);
             toggle(Setting.SCOREBOARD, config.scoreboardEnabled);
             toggle(Setting.STANDALONE, config.standaloneCommands);
             toggle(Setting.STANDALONE_ADMIN, config.standaloneAdminCommands);
@@ -228,6 +230,11 @@ public final class AdminSettingsUi {
                     }
                     case SELL -> {
                         config.sellEnabled = !config.sellEnabled;
+                        save(viewer);
+                        render();
+                    }
+                    case WORTH -> {
+                        config.worthEnabled = !config.worthEnabled;
                         save(viewer);
                         render();
                     }

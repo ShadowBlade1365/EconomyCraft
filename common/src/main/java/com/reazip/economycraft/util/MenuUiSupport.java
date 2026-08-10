@@ -212,19 +212,21 @@ public final class MenuUiSupport {
     }
 
     public static ItemStack createBalanceItem(EconomyManager eco, UUID playerId, @Nullable ServerPlayer player, @Nullable String name) {
+        if (player == null && (name == null || name.isBlank())) return ItemStack.EMPTY;
+
         ItemStack head = new ItemStack(Items.PLAYER_HEAD);
         var profile = player != null
                 ? ProfileComponentCompat.tryResolvedOrUnresolved(player.getGameProfile())
-                : ProfileComponentCompat.tryUnresolved(name != null && !name.isBlank() ? name : playerId.toString());
+                : ProfileComponentCompat.tryUnresolved(name);
         profile.ifPresent(resolvable -> head.set(DataComponents.PROFILE, resolvable));
         long balance = eco.getBalance(playerId, true);
-        String displayName = name != null ? name : playerId.toString();
+        String displayName = player != null ? IdentityCompat.of(player).name() : name;
         head.set(DataComponents.CUSTOM_NAME, Component.literal(displayName).withStyle(s -> s.withItalic(false).withBold(true).withColor(BALANCE_NAME_COLOR)));
         head.set(DataComponents.LORE, new ItemLore(List.of(balanceLore(balance))));
         return head;
     }
 
-    public static String resolvePlayerName(MinecraftServer server, UUID playerId) {
+    public static @Nullable String resolvePlayerName(MinecraftServer server, UUID playerId) {
         ServerPlayer online = server.getPlayerList().getPlayer(playerId);
         if (online != null) return IdentityCompat.of(online).name();
         return EconomyCraft.getManager(server).getBestName(playerId);

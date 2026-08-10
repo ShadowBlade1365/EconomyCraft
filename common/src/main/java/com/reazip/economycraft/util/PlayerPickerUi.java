@@ -98,14 +98,17 @@ public final class PlayerPickerUi {
                 known.put(online.getUUID(), IdentityCompat.of(online).name());
             }
             for (UUID id : eco.getBalances().keySet()) {
-                known.computeIfAbsent(id, key -> eco.getBestName(key));
+                if (known.containsKey(id)) continue;
+                String name = eco.getBestName(id);
+                if (name != null && !name.isBlank()) known.put(id, name);
             }
 
             String needle = query == null || query.isBlank() ? null : query.trim().toLowerCase(Locale.ROOT);
             List<Target> out = new ArrayList<>();
             for (Map.Entry<UUID, String> entry : known.entrySet()) {
                 if (!includeSelf && entry.getKey().equals(viewer.getUUID())) continue;
-                String name = entry.getValue() == null ? entry.getKey().toString() : entry.getValue();
+                String name = entry.getValue();
+                if (name == null || name.isBlank()) continue;
                 if (needle != null && !name.toLowerCase(Locale.ROOT).contains(needle)) continue;
                 out.add(new Target(entry.getKey(), name, eco.getBalance(entry.getKey(), true)));
             }

@@ -100,8 +100,15 @@ public class ShopManager {
             try {
                 String json = Files.readString(file);
                 JsonObject root = GSON.fromJson(json, JsonObject.class);
-                nextId = root.get("nextId").getAsInt();
-                for (var el : root.getAsJsonArray("listings")) {
+                if (root == null) return;
+
+                if (root.has("nextId")) {
+                    nextId = root.get("nextId").getAsInt();
+                }
+                JsonArray savedListings = root.has("listings")
+                        ? root.getAsJsonArray("listings")
+                        : new JsonArray();
+                for (var el : savedListings) {
                     try {
                         ShopListing l = ShopListing.load(el.getAsJsonObject(), server.registryAccess());
                         if (l.item == null || l.item.isEmpty()) {

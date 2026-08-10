@@ -171,6 +171,8 @@ public final class OrdersUi {
         private static List<OrderRequest> resolveRequests(OrderManager orders, @Nullable String query, SortMode sort,
                                                          boolean mineOnly, ServerPlayer viewer) {
             List<OrderRequest> list = new ArrayList<>(orders.getRequests());
+            var server = viewer.level().getServer();
+            list.removeIf(r -> MenuUiSupport.resolvePlayerName(server, r.requester) == null);
             if (query != null && !query.isBlank()) {
                 list.removeIf(r -> !MenuUiSupport.matchesSearch(r.item, query));
             }
@@ -520,7 +522,9 @@ public final class OrdersUi {
                 int idx = i;
                 this.addSlot(new Slot(container, i, 8 + c * 18, 18 + r * 18) {
                     @Override public boolean mayPlace(ItemStack stack) { return false; }
-                    @Override public boolean mayPickup(Player player) { return idx < 45 && super.mayPickup(player); }
+                    @Override public boolean mayPickup(Player player) {
+                        return isDeliverySlot(idx) && super.mayPickup(player);
+                    }
                 });
             }
             for (Slot slot : MenuUiSupport.playerInventorySlots(inv, 18 + 6 * 18 + 14)) {
@@ -566,6 +570,10 @@ public final class OrdersUi {
             eco.getDeliveries().removeDelivery(owner, stack);
         }
 
+        private boolean isDeliverySlot(int slot) {
+            return slot >= 0 && slot < 45 && page * 45 + slot < items.size();
+        }
+
         @Override
         protected boolean onClick(int slot, int dragType, ClickKind kind, Player player) {
             if (slot < 0 || slot >= 54) return false;
@@ -580,8 +588,8 @@ public final class OrdersUi {
             }
             if (kind == ClickKind.PICKUP) {
                 if (slot < 45) {
-                    Slot s = this.slots.get(slot);
-                    if (s.hasItem()) {
+                    if (isDeliverySlot(slot)) {
+                        Slot s = this.slots.get(slot);
                         ItemStack stack = s.getItem();
                         ItemStack copy = stack.copy();
                         if (player.getInventory().add(copy)) {
@@ -609,7 +617,7 @@ public final class OrdersUi {
             if (!slot.hasItem()) return ItemStack.EMPTY;
             ItemStack stack = slot.getItem();
             ItemStack copy = stack.copy();
-            if (idx < 45) {
+            if (isDeliverySlot(idx)) {
                 if (player.getInventory().add(copy)) {
                     removeStack(stack);
                     updatePage();

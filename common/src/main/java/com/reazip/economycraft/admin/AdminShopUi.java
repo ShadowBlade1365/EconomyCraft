@@ -24,6 +24,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemLore;
@@ -67,6 +68,25 @@ public final class AdminShopUi {
         }
     }
 
+    private record CategoryDraft(String key, @Nullable String name, @Nullable ChatFormatting color,
+                                 @Nullable String icon, boolean enabled) {
+        CategoryDraft withName(String value) {
+            return new CategoryDraft(key, value, color, icon, enabled);
+        }
+
+        CategoryDraft withColor(@Nullable ChatFormatting value) {
+            return new CategoryDraft(key, name, value, icon, enabled);
+        }
+
+        CategoryDraft withIcon(@Nullable String value) {
+            return new CategoryDraft(key, name, color, value, enabled);
+        }
+
+        CategoryDraft withEnabled(boolean value) {
+            return new CategoryDraft(key, name, color, icon, value);
+        }
+    }
+
     public static void open(ServerPlayer player, EconomyManager eco, Origin origin) {
         openRoot(player, eco, origin, 0);
     }
@@ -87,11 +107,11 @@ public final class AdminShopUi {
                                  @Nullable String query, int page) {
         String title;
         if (query != null && category != null) {
-            title = ShopDisplay.formatCategoryTitle(category) + ": " + query;
+            title = ShopDisplay.getCategoryName(eco.getPrices(), category, category) + ": " + query;
         } else if (query != null) {
             title = "Search: " + query;
         } else if (category != null) {
-            title = ShopDisplay.formatCategoryTitle(category);
+            title = ShopDisplay.getCategoryName(eco.getPrices(), category, category);
         } else {
             title = "All Items";
         }
@@ -102,6 +122,12 @@ public final class AdminShopUi {
                                    @Nullable String returnCategory) {
         MenuUiSupport.openMenu(player, "Edit Item",
                 (id, inv) -> new EditorMenu(id, inv, player, eco, origin, draft, returnCategory));
+    }
+
+    private static void openCategoryEditor(ServerPlayer player, EconomyManager eco, Origin origin,
+                                           String category, int returnPage) {
+        MenuUiSupport.openMenu(player, "Edit Category", (id, inv) -> new CategoryEditorMenu(
+                id, inv, player, eco, origin, toCategoryDraft(eco.getPrices(), category), returnPage));
     }
 
     private static void startAdd(ServerPlayer player, EconomyManager eco, Origin origin, @Nullable String category) {
@@ -189,6 +215,68 @@ public final class AdminShopUi {
         return ShopDisplay.createCategoryIcon(displayKey, category, prices, viewer, false);
     }
 
+    private static CategoryDraft toCategoryDraft(PriceRegistry prices, String category) {
+        PriceRegistry.CategorySettings settings = prices.categorySettings(category);
+        String name = settings != null ? settings.name() : null;
+        ChatFormatting color = null;
+        if (settings != null && settings.color() != null) {
+            for (ChatFormatting candidate : ShopDisplay.CATEGORY_COLORS) {
+                if (candidate.name().equalsIgnoreCase(settings.color())) {
+                    color = candidate;
+                    break;
+                }
+            }
+        }
+        String icon = settings != null && settings.icon() != null ? settings.icon().asString() : null;
+        return new CategoryDraft(category, name, color, icon, settings == null || settings.enabled());
+    }
+
+    private static String categoryDraftName(CategoryDraft draft) {
+        return draft.name() != null ? draft.name() : ShopDisplay.formatCategoryTitle(draft.key());
+    }
+
+    private static boolean storeCategory(ServerPlayer player, EconomyManager eco, CategoryDraft draft) {
+        boolean ok = eco.getPrices().upsertCategory(draft.key(), draft.name(),
+                draft.color() != null ? draft.color().name().toLowerCase(Locale.ROOT) : null,
+                draft.icon(), draft.enabled());
+        if (!ok) {
+            player.sendSystemMessage(MenuUiSupport.line("Could not write prices.json. Check the server log.",
+                    ChatFormatting.RED));
+        }
+        return ok;
+    }
+
+    private static void updateCategory(ServerPlayer player, EconomyManager eco, Origin origin,
+                                       CategoryDraft draft, int returnPage) {
+        if (storeCategory(player, eco, draft)) {
+            openCategoryEditor(player, eco, origin, draft.key(), returnPage);
+        } else {
+            openRoot(player, eco, origin, returnPage);
+        }
+    }
+
+    private static Item colorItem(ChatFormatting color) {
+        String path = switch (color) {
+            case BLACK -> "black_dye";
+            case DARK_BLUE, BLUE -> "blue_dye";
+            case DARK_AQUA -> "cyan_dye";
+            case AQUA -> "light_blue_dye";
+            case DARK_GREEN -> "green_dye";
+            case GREEN -> "lime_dye";
+            case DARK_RED, RED -> "red_dye";
+            case DARK_PURPLE -> "purple_dye";
+            case LIGHT_PURPLE -> "magenta_dye";
+            case GOLD -> "orange_dye";
+            case YELLOW -> "yellow_dye";
+            case DARK_GRAY -> "gray_dye";
+            case GRAY -> "light_gray_dye";
+            case WHITE -> "white_dye";
+            default -> "paper";
+        };
+        return IdentifierCompat.registryGetOptional(BuiltInRegistries.ITEM,
+                IdentifierCompat.withDefaultNamespace(path)).orElse(Items.PAPER);
+    }
+
     private static class CategoryMenu extends CompatMenu {
         private final ServerPlayer viewer;
         private final EconomyManager eco;
@@ -244,13 +332,18 @@ public final class AdminShopUi {
 
                 String category = categories.get(index);
                 ItemStack icon = categoryIcon(category, prices, viewer);
-                icon.set(DataComponents.CUSTOM_NAME, Component.literal(ShopDisplay.formatCategoryTitle(category))
-                        .withStyle(s -> s.withItalic(false).withBold(true).withColor(ShopDisplay.getCategoryColor(category))));
+                icon.set(DataComponents.CUSTOM_NAME, Component.literal(
+                                ShopDisplay.getCategoryName(prices, category, category))
+                        .withStyle(s -> s.withItalic(false).withBold(true)
+                                .withColor(ShopDisplay.getCategoryColor(prices, category, category))));
                 icon.set(DataComponents.LORE, new ItemLore(List.of(
                         MenuUiSupport.labeledValue("Id", category, MenuUiSupport.LABEL_PRIMARY_COLOR),
                         MenuUiSupport.labeledValue("Items", String.valueOf(prices.allByCategory(category).size()),
                                 MenuUiSupport.LABEL_PRIMARY_COLOR),
-                        MenuUiSupport.labeledValue("Click", "Edit these items", MenuUiSupport.LABEL_SECONDARY_COLOR))));
+                        MenuUiSupport.labeledValue("Status", prices.isCategoryEnabled(category) ? "On" : "Off",
+                                MenuUiSupport.LABEL_PRIMARY_COLOR),
+                        MenuUiSupport.labeledValue("Left click", "Edit items", MenuUiSupport.LABEL_SECONDARY_COLOR),
+                        MenuUiSupport.labeledValue("Right click", "Edit category", MenuUiSupport.LABEL_SECONDARY_COLOR))));
                 int slot = ShopDisplay.STAR_SLOT_ORDER.get(i);
                 container.setItem(slot, icon);
                 slotToIndex[slot] = index;
@@ -287,7 +380,12 @@ public final class AdminShopUi {
             if (slot < GRID_SLOTS) {
                 int index = slotToIndex[slot];
                 if (index >= 0 && index < categories.size()) {
-                    openList(viewer, eco, origin, categories.get(index), null, 0);
+                    String category = categories.get(index);
+                    if (dragType == 1) {
+                        openCategoryEditor(viewer, eco, origin, category, page);
+                    } else {
+                        openList(viewer, eco, origin, category, null, 0);
+                    }
                 }
                 return true;
             }
@@ -424,13 +522,262 @@ public final class AdminShopUi {
                 } else {
                     String title = category == null
                             ? "Search shop items"
-                            : "Search " + ShopDisplay.formatCategoryTitle(category);
+                            : "Search " + ShopDisplay.getCategoryName(eco.getPrices(), category, category);
                     TextInputUi.openSearch(viewer, title, (p, q) -> openList(p, eco, origin, category, q, 0));
                 }
                 return true;
             }
             return true;
         }
+    }
+
+    private static class CategoryEditorMenu extends CompatMenu {
+        private static final int CATEGORY = 4;
+        private static final int DELETE = 8;
+        private static final int NAME = 10;
+        private static final int COLOR = 12;
+        private static final int ICON = 14;
+        private static final int ENABLED = 16;
+        private static final int BACK = 18;
+
+        private final ServerPlayer viewer;
+        private final EconomyManager eco;
+        private final Origin origin;
+        private final CategoryDraft draft;
+        private final int returnPage;
+        private final SimpleContainer container = new SimpleContainer(27);
+
+        CategoryEditorMenu(int id, Inventory inv, ServerPlayer viewer, EconomyManager eco, Origin origin,
+                           CategoryDraft draft, int returnPage) {
+            super(MenuType.GENERIC_9x3, id);
+            this.viewer = viewer;
+            this.eco = eco;
+            this.origin = origin;
+            this.draft = draft;
+            this.returnPage = returnPage;
+
+            for (Slot slot : MenuUiSupport.readOnlyGridSlots(container, 27)) {
+                this.addSlot(slot);
+            }
+            for (Slot slot : MenuUiSupport.playerInventorySlots(inv, 18 + 3 * 18 + 14)) {
+                this.addSlot(slot);
+            }
+            render();
+        }
+
+        private ChatFormatting effectiveColor() {
+            return draft.color() != null ? draft.color() : ShopDisplay.getCategoryColor(draft.key());
+        }
+
+        private void render() {
+            container.clearContent();
+
+            ItemStack display = categoryIcon(draft.key(), eco.getPrices(), viewer);
+            display.setCount(1);
+            display.set(DataComponents.CUSTOM_NAME, Component.literal(categoryDraftName(draft))
+                    .withStyle(s -> s.withItalic(false).withBold(true).withColor(effectiveColor())));
+            display.set(DataComponents.LORE, new ItemLore(List.of(
+                    MenuUiSupport.labeledValue("Id", draft.key(), MenuUiSupport.LABEL_PRIMARY_COLOR),
+                    MenuUiSupport.labeledValue("Items", String.valueOf(eco.getPrices().categoryItemCount(draft.key())),
+                            MenuUiSupport.LABEL_PRIMARY_COLOR),
+                    MenuUiSupport.labeledValue("Status", draft.enabled() ? "On" : "Off",
+                            MenuUiSupport.LABEL_PRIMARY_COLOR))));
+            container.setItem(CATEGORY, display);
+
+            container.setItem(NAME, MenuUiSupport.button(Items.NAME_TAG, "Name", ChatFormatting.AQUA,
+                    MenuUiSupport.hint("The name players see."),
+                    MenuUiSupport.labeledValue("Now", categoryDraftName(draft), MenuUiSupport.LABEL_PRIMARY_COLOR)));
+
+            container.setItem(COLOR, MenuUiSupport.button(colorItem(effectiveColor()), "Color", effectiveColor(),
+                    MenuUiSupport.hint("The category name color."),
+                    MenuUiSupport.labeledValue("Now", draft.color() == null
+                                    ? "Default" : ShopDisplay.formatCategoryTitle(draft.color().name()),
+                            MenuUiSupport.LABEL_PRIMARY_COLOR)));
+
+            ItemStack icon = categoryIcon(draft.key(), eco.getPrices(), viewer);
+            icon.setCount(1);
+            icon.set(DataComponents.CUSTOM_NAME, Component.literal("Icon")
+                    .withStyle(s -> s.withItalic(false).withBold(true).withColor(ChatFormatting.YELLOW)));
+            List<Component> iconLore = new ArrayList<>();
+            iconLore.add(MenuUiSupport.hint("The item used on the category page."));
+            iconLore.add(MenuUiSupport.labeledValue("Now", draft.icon() == null ? "Default" : draft.icon(),
+                    MenuUiSupport.LABEL_PRIMARY_COLOR));
+            if (draft.icon() != null) {
+                iconLore.add(MenuUiSupport.labeledValue("Right click", "Reset to default",
+                        MenuUiSupport.LABEL_SECONDARY_COLOR));
+            }
+            icon.set(DataComponents.LORE, new ItemLore(iconLore));
+            container.setItem(ICON, icon);
+
+            container.setItem(ENABLED, MenuUiSupport.button(
+                    draft.enabled() ? ItemsCompat.limeStainedGlassPane() : ItemsCompat.redStainedGlassPane(),
+                    "Category Status", draft.enabled() ? ChatFormatting.GREEN : ChatFormatting.RED,
+                    MenuUiSupport.hint("Controls whether players can see and buy from it."),
+                    MenuUiSupport.labeledValue("Now", draft.enabled() ? "On" : "Off",
+                            MenuUiSupport.LABEL_PRIMARY_COLOR),
+                    MenuUiSupport.labeledValue("Click", draft.enabled() ? "Turn off" : "Turn on",
+                            MenuUiSupport.LABEL_SECONDARY_COLOR)));
+
+            Component deleteHint = "misc".equalsIgnoreCase(draft.key())
+                    ? MenuUiSupport.hint("The fallback category cannot be deleted.")
+                    : MenuUiSupport.hint("Moves its items to misc and disables buying them.");
+            container.setItem(DELETE, MenuUiSupport.button(Items.BARRIER, "Delete Category", ChatFormatting.DARK_RED,
+                    deleteHint));
+
+            container.setItem(BACK, MenuUiSupport.button(ItemsCompat.redStainedGlassPane(), "Back",
+                    ChatFormatting.DARK_RED, MenuUiSupport.hint("Changes are already saved.")));
+            MenuUiSupport.fillBackground(container);
+        }
+
+        private void editIcon() {
+            ItemPickerUi.open(viewer, "Pick a category icon", ItemPickerUi.Source.INVENTORY_AND_ALL, null,
+                    (picker, choice) -> {
+                        IdentifierCompat.Id id = IdentifierCompat.wrap(
+                                BuiltInRegistries.ITEM.getKey(choice.prototype().getItem()));
+                        if (id == null) {
+                            picker.sendSystemMessage(MenuUiSupport.line("That item cannot be used as an icon.",
+                                    ChatFormatting.RED));
+                            openCategoryEditor(picker, eco, origin, draft.key(), returnPage);
+                            return;
+                        }
+                        updateCategory(picker, eco, origin, draft.withIcon(id.asString()), returnPage);
+                    },
+                    p -> openCategoryEditor(p, eco, origin, draft.key(), returnPage));
+        }
+
+        @Override
+        protected boolean onClick(int slot, int dragType, ClickKind kind, Player player) {
+            if (slot < 0 || slot >= 27) return false;
+            if (kind != ClickKind.PICKUP && kind != ClickKind.QUICK_MOVE) return true;
+
+            switch (slot) {
+                case NAME -> TextInputUi.open(viewer, "Category name", categoryDraftName(draft), Items.NAME_TAG,
+                        "Use: ", "Type a name",
+                        (p, text) -> updateCategory(p, eco, origin, draft.withName(text), returnPage));
+                case COLOR -> MenuUiSupport.openMenu(viewer, "Category Color",
+                        (id, inv) -> new CategoryColorMenu(id, inv, viewer, eco, origin, draft, returnPage));
+                case ICON -> {
+                    if (dragType == 1 && draft.icon() != null) {
+                        updateCategory(viewer, eco, origin, draft.withIcon(null), returnPage);
+                    } else {
+                        editIcon();
+                    }
+                }
+                case ENABLED -> updateCategory(viewer, eco, origin,
+                        draft.withEnabled(!draft.enabled()), returnPage);
+                case DELETE -> {
+                    if ("misc".equalsIgnoreCase(draft.key())) {
+                        viewer.sendSystemMessage(MenuUiSupport.line("The misc category cannot be deleted.",
+                                ChatFormatting.RED));
+                        render();
+                    } else {
+                        confirmCategoryDelete(viewer, eco, origin, draft, returnPage);
+                    }
+                }
+                case BACK -> openRoot(viewer, eco, origin, returnPage);
+                default -> {
+                }
+            }
+            return true;
+        }
+    }
+
+    private static class CategoryColorMenu extends CompatMenu {
+        private static final int BACK = 18;
+
+        private final ServerPlayer viewer;
+        private final EconomyManager eco;
+        private final Origin origin;
+        private final CategoryDraft draft;
+        private final int returnPage;
+        private final SimpleContainer container = new SimpleContainer(27);
+
+        CategoryColorMenu(int id, Inventory inv, ServerPlayer viewer, EconomyManager eco, Origin origin,
+                          CategoryDraft draft, int returnPage) {
+            super(MenuType.GENERIC_9x3, id);
+            this.viewer = viewer;
+            this.eco = eco;
+            this.origin = origin;
+            this.draft = draft;
+            this.returnPage = returnPage;
+
+            for (Slot slot : MenuUiSupport.readOnlyGridSlots(container, 27)) {
+                this.addSlot(slot);
+            }
+            for (Slot slot : MenuUiSupport.playerInventorySlots(inv, 18 + 3 * 18 + 14)) {
+                this.addSlot(slot);
+            }
+            render();
+        }
+
+        private void render() {
+            container.clearContent();
+            boolean defaultSelected = draft.color() == null;
+            container.setItem(0, MenuUiSupport.button(Items.PAPER, "Default", defaultSelected
+                            ? ChatFormatting.GREEN : ChatFormatting.WHITE,
+                    defaultSelected ? MenuUiSupport.line("Currently selected", ChatFormatting.GREEN)
+                            : MenuUiSupport.hint("Use the built-in category color.")));
+
+            for (int i = 0; i < ShopDisplay.CATEGORY_COLORS.size(); i++) {
+                ChatFormatting color = ShopDisplay.CATEGORY_COLORS.get(i);
+                boolean selected = color == draft.color();
+                container.setItem(i + 1, MenuUiSupport.button(colorItem(color),
+                        ShopDisplay.formatCategoryTitle(color.name()), selected ? ChatFormatting.GREEN : color,
+                        selected ? MenuUiSupport.line("Currently selected", ChatFormatting.GREEN)
+                                : MenuUiSupport.hint("Click to use this color.")));
+            }
+
+            container.setItem(BACK, MenuUiSupport.backButton());
+            MenuUiSupport.fillBackground(container);
+        }
+
+        @Override
+        protected boolean onClick(int slot, int dragType, ClickKind kind, Player player) {
+            if (slot < 0 || slot >= 27) return false;
+            if (kind != ClickKind.PICKUP && kind != ClickKind.QUICK_MOVE) return true;
+
+            if (slot == 0) {
+                updateCategory(viewer, eco, origin, draft.withColor(null), returnPage);
+                return true;
+            }
+            int colorIndex = slot - 1;
+            if (colorIndex >= 0 && colorIndex < ShopDisplay.CATEGORY_COLORS.size()) {
+                updateCategory(viewer, eco, origin,
+                        draft.withColor(ShopDisplay.CATEGORY_COLORS.get(colorIndex)), returnPage);
+                return true;
+            }
+            if (slot == BACK) {
+                openCategoryEditor(viewer, eco, origin, draft.key(), returnPage);
+                return true;
+            }
+            return true;
+        }
+    }
+
+    private static void confirmCategoryDelete(ServerPlayer player, EconomyManager eco, Origin origin,
+                                              CategoryDraft draft, int returnPage) {
+        int itemCount = eco.getPrices().categoryItemCount(draft.key());
+        ItemStack subject = categoryIcon(draft.key(), eco.getPrices(), player);
+        subject.set(DataComponents.CUSTOM_NAME, Component.literal(categoryDraftName(draft))
+                .withStyle(s -> s.withItalic(false).withBold(true).withColor(ChatFormatting.RED)));
+        List<Component> lore = List.of(
+                MenuUiSupport.labeledValue("Items", String.valueOf(itemCount), MenuUiSupport.LABEL_PRIMARY_COLOR),
+                MenuUiSupport.line("The category and its subcategories will be deleted.", ChatFormatting.RED),
+                MenuUiSupport.hint("Every affected item moves to misc."),
+                MenuUiSupport.hint("Their buy prices will be set to 0."));
+
+        ConfirmUi.open(player, "Delete category?", subject, "Delete category", lore,
+                p -> {
+                    boolean ok = eco.getPrices().deleteCategory(draft.key());
+                    p.sendSystemMessage(ok
+                            ? Component.literal("Deleted " + categoryDraftName(draft) + " and moved " + itemCount
+                                    + " item" + (itemCount == 1 ? "" : "s") + " to misc.")
+                                    .withStyle(ChatFormatting.GREEN)
+                            : MenuUiSupport.line("Could not write prices.json. Check the server log.",
+                                    ChatFormatting.RED));
+                    openRoot(p, eco, origin, returnPage);
+                },
+                p -> openCategoryEditor(p, eco, origin, draft.key(), returnPage));
     }
 
     private static class EditorMenu extends CompatMenu {
@@ -606,9 +953,11 @@ public final class AdminShopUi {
                 String category = categories.get(index);
                 boolean current = category.equalsIgnoreCase(draft.category());
                 ItemStack icon = categoryIcon(category, eco.getPrices(), viewer);
-                icon.set(DataComponents.CUSTOM_NAME, Component.literal(ShopDisplay.formatCategoryTitle(category))
+                icon.set(DataComponents.CUSTOM_NAME, Component.literal(
+                                ShopDisplay.getCategoryName(eco.getPrices(), category, category))
                         .withStyle(s -> s.withItalic(false).withBold(true)
-                                .withColor(current ? ChatFormatting.GREEN : ShopDisplay.getCategoryColor(category))));
+                                .withColor(current ? ChatFormatting.GREEN
+                                        : ShopDisplay.getCategoryColor(eco.getPrices(), category, category))));
                 icon.set(DataComponents.LORE, new ItemLore(List.of(
                         MenuUiSupport.labeledValue("Id", category, MenuUiSupport.LABEL_PRIMARY_COLOR),
                         current ? MenuUiSupport.line("Currently selected", ChatFormatting.GREEN)

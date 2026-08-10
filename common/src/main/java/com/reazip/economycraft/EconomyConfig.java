@@ -36,6 +36,8 @@ public class EconomyConfig {
     public boolean serverShopEnabled = true;
     @SerializedName("sell_enabled")
     public boolean sellEnabled = true;
+    @SerializedName("worth_enabled")
+    public boolean worthEnabled = true;
     @SerializedName("shop_enabled")
     public boolean shopEnabled = true;
     @SerializedName("orders_enabled")
@@ -132,12 +134,19 @@ public class EconomyConfig {
         JsonObject userRoot;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
-            JsonElement parsed = JsonParser.parseString(json);
-            if (!parsed.isJsonObject()) {
-                LOGGER.warn("[EconomyCraft] config.json root is not an object, skipping merge.");
-                return;
+            if (json.isBlank()) {
+                userRoot = new JsonObject();
+            } else {
+                JsonElement parsed = JsonParser.parseString(json);
+                if (parsed.isJsonNull()) {
+                    userRoot = new JsonObject();
+                } else if (parsed.isJsonObject()) {
+                    userRoot = parsed.getAsJsonObject();
+                } else {
+                    LOGGER.warn("[EconomyCraft] config.json root is not an object, skipping merge.");
+                    return;
+                }
             }
-            userRoot = parsed.getAsJsonObject();
         } catch (Exception ex) {
             throw new IllegalStateException("[EconomyCraft] Failed to read/parse user config.json for merge at " + file, ex);
         }

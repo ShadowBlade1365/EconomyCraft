@@ -50,6 +50,22 @@ public final class ShopDisplay {
         return sb.length() == 0 ? category : sb.toString();
     }
 
+    public static String getCategoryName(PriceRegistry prices, String categoryKey, String fallbackKey) {
+        PriceRegistry.CategorySettings settings = prices.categorySettings(categoryKey);
+        if (settings != null && settings.name() != null && !settings.name().isBlank()) return settings.name();
+        return formatCategoryTitle(fallbackKey);
+    }
+
+    public static ChatFormatting getCategoryColor(PriceRegistry prices, String categoryKey, String fallbackKey) {
+        PriceRegistry.CategorySettings settings = prices.categorySettings(categoryKey);
+        if (settings != null && settings.color() != null) {
+            for (ChatFormatting color : CATEGORY_COLORS) {
+                if (color.name().equalsIgnoreCase(settings.color())) return color;
+            }
+        }
+        return getCategoryColor(fallbackKey);
+    }
+
     public static ItemStack createDisplayStack(PriceRegistry.PriceEntry entry, ServerPlayer viewer) {
         ItemStack stack = buildDisplayStack(entry, viewer);
         if (stack.isEmpty() && LOGGED_UNAVAILABLE.add(entry.id().asString())) {
@@ -61,7 +77,9 @@ public final class ShopDisplay {
 
     public static ItemStack createCategoryIcon(String displayKey, String categoryKey, PriceRegistry prices,
                                                ServerPlayer viewer, boolean buyableOnly) {
-        IdentifierCompat.Id iconId = CATEGORY_ICONS.get(normalizeCategoryKey(displayKey));
+        PriceRegistry.CategorySettings settings = prices.categorySettings(categoryKey);
+        IdentifierCompat.Id iconId = settings != null ? settings.icon() : null;
+        if (iconId == null) iconId = CATEGORY_ICONS.get(normalizeCategoryKey(displayKey));
         if (iconId == null && categoryKey != null) {
             iconId = CATEGORY_ICONS.get(normalizeCategoryKey(categoryKey));
         }
@@ -70,7 +88,7 @@ public final class ShopDisplay {
             Optional<?> item = IdentifierCompat.registryGetOptional(BuiltInRegistries.ITEM, iconId);
             if (item.isPresent()) {
                 Item resolved = resolveItemValue(item.get());
-                if (resolved != null) {
+                if (resolved != null && resolved != Items.AIR) {
                     return new ItemStack(resolved);
                 }
             }
@@ -157,6 +175,25 @@ public final class ShopDisplay {
             default -> ChatFormatting.WHITE;
         };
     }
+
+    public static final List<ChatFormatting> CATEGORY_COLORS = List.of(
+            ChatFormatting.BLACK,
+            ChatFormatting.DARK_BLUE,
+            ChatFormatting.DARK_GREEN,
+            ChatFormatting.DARK_AQUA,
+            ChatFormatting.DARK_RED,
+            ChatFormatting.DARK_PURPLE,
+            ChatFormatting.GOLD,
+            ChatFormatting.GRAY,
+            ChatFormatting.DARK_GRAY,
+            ChatFormatting.BLUE,
+            ChatFormatting.GREEN,
+            ChatFormatting.AQUA,
+            ChatFormatting.RED,
+            ChatFormatting.LIGHT_PURPLE,
+            ChatFormatting.YELLOW,
+            ChatFormatting.WHITE
+    );
 
     private static ItemStack buildDisplayStack(PriceRegistry.PriceEntry entry, ServerPlayer viewer) {
         if (entry.customItem() != null) {

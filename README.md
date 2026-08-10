@@ -37,8 +37,9 @@ Each screen also has a command: `/bal`, `/bal top`, `/pay`, `/daily`, `/shop`, `
 
 ### Server Shop editor
 
-Browse categories and click an item to change it. Changes are written to `prices.json` when confirmed.
+Browse categories and click an item to change it.
 
+- **Category editor** — right-click a category to change its displayed name, color, icon, or visibility. Deleting a category moves all of its items to `misc` and sets their buy prices to `0`.
 - **Add item** — select any item in the game or one from the inventory. Custom names, enchantments and container contents are stored with the entry.
 - **Buy Price / Sell Price** — the price of one item. `0` disables that direction.
 - **Bulk Amount** — how many a shift-click buys or sells.
@@ -82,6 +83,7 @@ In singleplayer each world gets that same folder inside its own save, at `saves/
 | `shop_enabled`                | `true`   | Enable the player shop.                                                         |
 | `orders_enabled`              | `true`   | Enable the orders board. Collecting deliveries works either way.                |
 | `sell_enabled`                | `true`   | Enable selling.                                                                 |
+| `worth_enabled`               | `true`   | Enable item value lookups through `/worth` and the `/eco` menu.                  |
 | `balance_separator`           | `"."`    | Thousands separator. Only the first character is used, so `","` gives `$1,000`. |
 
 ### `prices.json`

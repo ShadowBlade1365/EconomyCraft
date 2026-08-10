@@ -36,6 +36,7 @@ public final class EconomyCraft {
 
         LifecycleEvent.SERVER_STOPPING.register(server -> {
             if (manager != null && lastServer == server) {
+                manager.deactivate();
                 manager.save();
             }
             AsyncFileWriter.flush();
@@ -48,7 +49,11 @@ public final class EconomyCraft {
         try {
             MinecraftServer server = player.level().getServer();
             EconomyManager eco = getManager(server);
-            eco.getBalance(player.getUUID(), true);
+            if (eco.getBalance(player.getUUID(), false) == null) {
+                eco.getBalance(player.getUUID(), true);
+            } else {
+                eco.refreshLeaderboard();
+            }
 
             if (eco.getDeliveries().hasDeliveries(player.getUUID())) {
                 sendPrompt(player, "You have unclaimed items: ", "[Claim]", "/eco orders claim");
@@ -78,6 +83,7 @@ public final class EconomyCraft {
 
     public static EconomyManager getManager(MinecraftServer server) {
         if (manager == null || lastServer != server) {
+            if (manager != null) manager.deactivate();
             manager = new EconomyManager(server);
             lastServer = server;
         }

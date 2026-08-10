@@ -42,7 +42,6 @@ import net.minecraft.world.item.ItemStack;
 import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
 
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 public final class EconomyCommands {
@@ -66,7 +65,8 @@ public final class EconomyCommands {
         dispatcher.register(buildShop().requires(s -> EconomyConfig.get().standaloneCommands));
         dispatcher.register(buildOrders(buildContext).requires(s -> EconomyConfig.get().standaloneCommands));
         dispatcher.register(buildDaily().requires(s -> EconomyConfig.get().standaloneCommands));
-        dispatcher.register(WorthCommand.register(buildContext).requires(s -> EconomyConfig.get().standaloneCommands));
+        dispatcher.register(WorthCommand.register(buildContext).requires(s ->
+                EconomyConfig.get().standaloneCommands && EconomyConfig.get().worthEnabled));
 
         dispatcher.register(
                 buildAddMoney().requires(src ->
@@ -133,7 +133,7 @@ public final class EconomyCommands {
         root.then(buildShop());
         root.then(buildOrders(buildContext));
         root.then(buildDaily());
-        root.then(WorthCommand.register(buildContext));
+        root.then(WorthCommand.register(buildContext).requires(s -> EconomyConfig.get().worthEnabled));
 
         root.then(addMoney);
         root.then(setMoney);
@@ -275,30 +275,21 @@ public final class EconomyCommands {
 
     private static int balTop(CommandSourceStack source) {
         EconomyManager manager = EconomyCraft.getManager(source.getServer());
-        Map<UUID, Long> balances = manager.getBalances();
-
-        if (balances.isEmpty()) {
+        List<EconomyManager.LeaderboardEntry> sorted = manager.getLeaderboardEntries(10);
+        if (sorted.isEmpty()) {
             source.sendFailure(Component.literal("No balances found").withStyle(ChatFormatting.RED));
             return 0;
         }
 
-        var sorted = getSortedEntries(balances, manager);
-        if (sorted.size() > 10) sorted = new ArrayList<>(sorted.subList(0, 10));
-
         StringBuilder sb = new StringBuilder("Top balances:\n");
         for (int i = 0; i < sorted.size(); i++) {
             var e = sorted.get(i);
-            UUID id = e.getKey();
-            long balance = e.getValue();
-
-            String name = manager.getBestName(id);
-            if (name == null || name.isBlank()) name = id.toString();
 
             sb.append(i + 1)
                     .append(". ")
-                    .append(name)
+                    .append(e.name())
                     .append(": ")
-                    .append(EconomyCraft.formatMoney(balance));
+                    .append(EconomyCraft.formatMoney(e.balance()));
 
             if (i + 1 < sorted.size()) sb.append("\n");
         }
@@ -309,25 +300,6 @@ public final class EconomyCommands {
         reply(source, executor, msg, false);
 
         return sorted.size();
-    }
-
-    private static @NotNull ArrayList<Map.Entry<UUID, Long>> getSortedEntries(Map<UUID, Long> balances, EconomyManager manager) {
-        var sorted = new ArrayList<>(balances.entrySet());
-        sorted.sort((a, b) -> {
-            int c = Long.compare(b.getValue(), a.getValue());
-            if (c != 0) return c;
-
-            String an = manager.getBestName(a.getKey());
-            String bn = manager.getBestName(b.getKey());
-            if (an == null || an.isBlank()) an = a.getKey().toString();
-            if (bn == null || bn.isBlank()) bn = b.getKey().toString();
-
-            c = String.CASE_INSENSITIVE_ORDER.compare(an, bn);
-            if (c != 0) return c;
-
-            return a.getKey().compareTo(b.getKey());
-        });
-        return sorted;
     }
 
     private static int pay(ServerPlayer from, String target, long amount, CommandSourceStack source) {
@@ -360,10 +332,13 @@ public final class EconomyCommands {
             return 0;
         }
 
+        String displayName = toOnline != null ? IdentityCompat.of(toOnline).name() : manager.getBestName(toId);
+        if (displayName == null || displayName.isBlank()) {
+            source.sendFailure(Component.literal("Unknown player").withStyle(ChatFormatting.RED));
+            return 0;
+        }
+
         if (manager.pay(from.getUUID(), toId, amount)) {
-            String displayName = (toOnline != null)
-                    ? IdentityCompat.of(toOnline).name()
-                    : getDisplayName(manager, toId);
 
             ServerPlayer executor = tryGetPlayer(source);
 
@@ -901,15 +876,6 @@ public final class EconomyCommands {
         } else {
             source.sendSuccess(() -> msg, broadcastToOps);
         }
-    }
-
-    private static String getDisplayName(EconomyManager manager, UUID id) {
-        var server = manager.getServer();
-        ServerPlayer online = server.getPlayerList().getPlayer(id);
-        if (online != null) return IdentityCompat.of(online).name();
-        String name = manager.getBestName(id);
-        if (name != null && !name.isBlank()) return name;
-        return id.toString();
     }
 
     private static CompletableFuture<Suggestions> suggestPlayers(CommandSourceStack source, SuggestionsBuilder builder) {

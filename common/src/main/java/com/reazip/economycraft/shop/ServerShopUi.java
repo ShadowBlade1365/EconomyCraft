@@ -52,6 +52,10 @@ public final class ServerShopUi {
 
         PriceRegistry prices = eco.getPrices();
         String cat = category.trim();
+        if (!prices.isCategoryEnabled(cat)) {
+            openRoot(player, eco);
+            return;
+        }
         if (cat.contains(".")) {
             openItems(player, eco, cat);
             return;
@@ -81,7 +85,7 @@ public final class ServerShopUi {
     }
 
     private static void openSubcategories(ServerPlayer player, EconomyManager eco, String topCategory) {
-        MenuUiSupport.openMenu(player, ShopDisplay.formatCategoryTitle(topCategory), (id, inv) ->
+        MenuUiSupport.openMenu(player, ShopDisplay.getCategoryName(eco.getPrices(), topCategory, topCategory), (id, inv) ->
                 new SubcategoryMenu(id, inv, eco, topCategory, player));
     }
 
@@ -95,7 +99,8 @@ public final class ServerShopUi {
 
     private static void openItems(ServerPlayer player, EconomyManager eco, String category,
                                   @Nullable String displayTitle, int page, SortMode sort) {
-        String title = ShopDisplay.formatCategoryTitle(displayTitle != null ? displayTitle : category);
+        String title = ShopDisplay.getCategoryName(eco.getPrices(), category,
+                displayTitle != null ? displayTitle : category);
         MenuUiSupport.openMenu(player, title, (id, inv) ->
                 new ItemMenu(id, inv, eco, category, displayTitle, null, page, player, sort));
     }
@@ -153,8 +158,9 @@ public final class ServerShopUi {
                 ItemStack icon = ShopDisplay.createCategoryIcon(cat, cat, prices, viewer, true);
                 if (icon.isEmpty()) continue;
 
-                icon.set(DataComponents.CUSTOM_NAME, Component.literal(ShopDisplay.formatCategoryTitle(cat))
-                        .withStyle(s -> s.withItalic(false).withColor(ShopDisplay.getCategoryColor(cat)).withBold(true)));
+                icon.set(DataComponents.CUSTOM_NAME, Component.literal(ShopDisplay.getCategoryName(prices, cat, cat))
+                        .withStyle(s -> s.withItalic(false)
+                                .withColor(ShopDisplay.getCategoryColor(prices, cat, cat)).withBold(true)));
                 icon.set(DataComponents.LORE, new ItemLore(List.of(MenuUiSupport.hint("Click to view items"))));
                 int slot = ShopDisplay.STAR_SLOT_ORDER.get(i);
                 container.setItem(slot, icon);
@@ -275,8 +281,9 @@ public final class ServerShopUi {
                 ItemStack icon = ShopDisplay.createCategoryIcon(sub, full, prices, viewer, true);
                 if (icon.isEmpty()) continue;
 
-                icon.set(DataComponents.CUSTOM_NAME, Component.literal(ShopDisplay.formatCategoryTitle(sub))
-                        .withStyle(s -> s.withItalic(false).withColor(ChatFormatting.WHITE).withBold(true)));
+                icon.set(DataComponents.CUSTOM_NAME, Component.literal(ShopDisplay.getCategoryName(prices, full, sub))
+                        .withStyle(s -> s.withItalic(false)
+                                .withColor(ShopDisplay.getCategoryColor(prices, full, full)).withBold(true)));
                 icon.set(DataComponents.LORE, new ItemLore(List.of(MenuUiSupport.hint("Click to view items"))));
                 container.setItem(i, icon);
             }
@@ -516,7 +523,7 @@ public final class ServerShopUi {
         }
 
         private void handlePurchase(PriceRegistry.PriceEntry entry, int amount) {
-            if (entry.unitBuy() <= 0) {
+            if (entry.unitBuy() <= 0 || !prices.isCategoryEnabled(entry.category())) {
                 viewer.sendSystemMessage(Component.literal("This item cannot be purchased.")
                         .withStyle(ChatFormatting.RED));
                 return;

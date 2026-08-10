@@ -228,8 +228,10 @@ public final class ShopUi {
         }
 
         private static List<ShopListing> resolveListings(ShopManager shop, @Nullable String query, SortMode sort,
-                                                        boolean mineOnly, ServerPlayer viewer) {
+                                                         boolean mineOnly, ServerPlayer viewer) {
             List<ShopListing> list = new ArrayList<>(shop.getListings());
+            var server = viewer.level().getServer();
+            list.removeIf(l -> MenuUiSupport.resolvePlayerName(server, l.seller) == null);
             if (query != null && !query.isBlank()) {
                 list.removeIf(l -> !MenuUiSupport.matchesSearch(l.item, query));
             }

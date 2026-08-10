@@ -41,12 +41,14 @@ import java.util.function.Predicate;
 public final class PriceRegistry {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final String DEFAULT_RESOURCE_PATH = "/assets/economycraft/prices.json";
+    private static final String CATEGORY_OVERRIDES_KEY = "_categories";
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
             .create();
     private final Path file;
     private final HolderLookup.Provider registryAccess;
     private final Map<IdentifierCompat.Id, List<PriceEntry>> prices = new LinkedHashMap<>();
+    private final Map<String, CategorySettings> categorySettings = new LinkedHashMap<>();
 
     public PriceRegistry(MinecraftServer server) {
         this.file = EconomyPaths.configDir(server).resolve("prices.json");
@@ -63,6 +65,7 @@ public final class PriceRegistry {
 
     public void reload() {
         this.prices.clear();
+        this.categorySettings.clear();
 
         if (Files.notExists(file)) {
             LOGGER.warn("[EconomyCraft] prices.json not found at {} (prices map will be empty).", file);
@@ -72,16 +75,15 @@ public final class PriceRegistry {
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
             JsonObject root = GSON.fromJson(json, JsonObject.class);
-            if (root == null) {
-                LOGGER.error("[EconomyCraft] prices.json is empty or invalid JSON: {}", file);
-                return;
-            }
+            if (root == null) return;
+            loadCategorySettings(root);
 
             int entryCount = 0;
             int invalidCustomItemCount = 0;
             List<String> missingItems = new ArrayList<>();
             for (Map.Entry<String, JsonElement> e : root.entrySet()) {
                 String key = e.getKey();
+                if (CATEGORY_OVERRIDES_KEY.equals(key)) continue;
                 String baseKeyStr = key;
                 int hashIdx = key.indexOf('#');
                 if (hashIdx >= 0) {
@@ -223,31 +225,62 @@ public final class PriceRegistry {
         return bundle != null && !bundle.isEmpty();
     }
 
-    private static final Predicate<PriceEntry> BUYABLE = p -> p.unitBuy() > 0;
     private static final Predicate<PriceEntry> ANY = p -> true;
+
+    private boolean isBuyable(PriceEntry entry) {
+        return entry.unitBuy() > 0 && isCategoryEnabled(entry.category());
+    }
 
     public Set<String> buyCategories() {
         Set<String> out = new LinkedHashSet<>();
-        for (PriceEntry p : entries(BUYABLE)) {
+        for (PriceEntry p : entries(this::isBuyable)) {
             out.add(p.category());
         }
         return out;
     }
 
     public List<PriceEntry> buyableByCategory(String category) {
-        return byCategory(category, BUYABLE);
+        return byCategory(category, this::isBuyable);
     }
 
     public List<PriceEntry> search(String query, @Nullable String category) {
-        return search(query, category, BUYABLE);
+        return search(query, category, this::isBuyable);
     }
 
     public List<String> buyTopCategories() {
-        return topCategories(BUYABLE);
+        return topCategories(this::isBuyable);
     }
 
     public List<String> buySubcategories(String topCategory) {
-        return subcategories(topCategory, BUYABLE);
+        return subcategories(topCategory, this::isBuyable);
+    }
+
+    @Nullable
+    public CategorySettings categorySettings(String category) {
+        return categorySettings.get(normalizeCategory(category));
+    }
+
+    public boolean isCategoryEnabled(String category) {
+        String current = normalizeCategory(category);
+        if (current.isBlank()) return true;
+
+        while (true) {
+            CategorySettings settings = categorySettings.get(current);
+            if (settings != null && !settings.enabled()) return false;
+            int dot = current.lastIndexOf('.');
+            if (dot < 0) return true;
+            current = current.substring(0, dot);
+        }
+    }
+
+    public int categoryItemCount(String category) {
+        String normalized = normalizeCategory(category);
+        if (normalized.isBlank()) return 0;
+        int count = 0;
+        for (PriceEntry entry : entries(ANY)) {
+            if (isCategoryOrChild(entry.category(), normalized)) count++;
+        }
+        return count;
     }
 
     public List<PriceEntry> allEntries() {
@@ -381,6 +414,56 @@ public final class PriceRegistry {
         });
     }
 
+    public synchronized boolean upsertCategory(String category, @Nullable String name, @Nullable String color,
+                                               @Nullable String icon, boolean enabled) {
+        String normalized = normalizeCategory(category);
+        if (normalized.isBlank()) return false;
+
+        IdentifierCompat.Id iconId = icon == null || icon.isBlank() ? null : IdentifierCompat.tryParse(icon);
+        if (icon != null && !icon.isBlank() && iconId == null) return false;
+        if (iconId != null) {
+            Item iconItem = IdentifierCompat.registryGetOptional(BuiltInRegistries.ITEM, iconId).orElse(null);
+            if (iconItem == null || iconItem == Items.AIR) return false;
+        }
+
+        return mutate(root -> {
+            JsonObject categories = getOrCreateCategoryOverrides(root);
+            JsonObject settings = new JsonObject();
+            if (name != null && !name.isBlank()) settings.addProperty("name", name.trim());
+            if (color != null && !color.isBlank()) settings.addProperty("color", color.trim().toLowerCase(Locale.ROOT));
+            if (iconId != null) settings.addProperty("icon", iconId.asString());
+            settings.addProperty("enabled", enabled);
+            categories.add(normalized, settings);
+        });
+    }
+
+    public synchronized boolean deleteCategory(String category) {
+        String normalized = normalizeCategory(category);
+        if (normalized.isBlank() || "misc".equals(normalized)) return false;
+
+        return mutate(root -> applyCategoryDeletion(root, normalized));
+    }
+
+    static void applyCategoryDeletion(JsonObject root, String normalized) {
+        for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
+            if (CATEGORY_OVERRIDES_KEY.equals(entry.getKey()) || !entry.getValue().isJsonObject()) continue;
+            JsonObject item = entry.getValue().getAsJsonObject();
+            if (!isCategoryOrChild(getString(item), normalized)) continue;
+            item.addProperty("category", "misc");
+            item.addProperty("unit_buy", 0);
+        }
+
+        JsonElement overridesElement = root.get(CATEGORY_OVERRIDES_KEY);
+        if (overridesElement == null || !overridesElement.isJsonObject()) return;
+        JsonObject overrides = overridesElement.getAsJsonObject();
+        List<String> remove = new ArrayList<>();
+        for (String key : overrides.keySet()) {
+            if (isCategoryOrChild(key, normalized)) remove.add(key);
+        }
+        for (String key : remove) overrides.remove(key);
+        if (overrides.size() == 0) root.remove(CATEGORY_OVERRIDES_KEY);
+    }
+
     public synchronized boolean keyExists(String key) {
         if (key == null || key.isBlank()) return false;
         JsonObject root = readUserJson();
@@ -419,6 +502,54 @@ public final class PriceRegistry {
         }
         reload();
         return true;
+    }
+
+    private void loadCategorySettings(JsonObject root) {
+        JsonElement element = root.get(CATEGORY_OVERRIDES_KEY);
+        if (element == null || !element.isJsonObject()) return;
+
+        for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+            String key = normalizeCategory(entry.getKey());
+            if (key.isBlank() || !entry.getValue().isJsonObject()) continue;
+
+            JsonObject value = entry.getValue().getAsJsonObject();
+            String name = getOptionalString(value, "name");
+            String color = getOptionalString(value, "color");
+            IdentifierCompat.Id icon = IdentifierCompat.tryParse(getOptionalString(value, "icon"));
+            boolean enabled = getBoolean(value, "enabled", true);
+            categorySettings.put(key, new CategorySettings(name, color, icon, enabled));
+        }
+    }
+
+    private static JsonObject getOrCreateCategoryOverrides(JsonObject root) {
+        JsonElement existing = root.get(CATEGORY_OVERRIDES_KEY);
+        if (existing != null && existing.isJsonObject()) return existing.getAsJsonObject();
+        JsonObject created = new JsonObject();
+        root.add(CATEGORY_OVERRIDES_KEY, created);
+        return created;
+    }
+
+    private static String normalizeCategory(@Nullable String category) {
+        return category == null ? "" : category.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean isCategoryOrChild(@Nullable String candidate, String category) {
+        String normalized = normalizeCategory(candidate);
+        return normalized.equals(category) || normalized.startsWith(category + ".");
+    }
+
+    @Nullable
+    private static String getOptionalString(JsonObject obj, String key) {
+        if (!obj.has(key) || !obj.get(key).isJsonPrimitive()
+                || !obj.get(key).getAsJsonPrimitive().isString()) return null;
+        String value = obj.get(key).getAsString().trim();
+        return value.isBlank() ? null : value;
+    }
+
+    private static boolean getBoolean(JsonObject obj, String key, boolean fallback) {
+        if (!obj.has(key) || !obj.get(key).isJsonPrimitive()
+                || !obj.get(key).getAsJsonPrimitive().isBoolean()) return fallback;
+        return obj.get(key).getAsBoolean();
     }
 
     @Nullable
@@ -744,4 +875,7 @@ public final class PriceRegistry {
             long unitSell,
             ItemStack customItem
     ) { }
+
+    public record CategorySettings(@Nullable String name, @Nullable String color,
+                                   @Nullable IdentifierCompat.Id icon, boolean enabled) { }
 }

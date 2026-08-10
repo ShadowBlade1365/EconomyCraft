@@ -96,9 +96,19 @@ public final class HubUi {
     }
 
     private static void startWorth(ServerPlayer player) {
+        if (!EconomyConfig.get().worthEnabled) {
+            open(player);
+            return;
+        }
+
         PriceRegistry prices = EconomyCraft.getManager(player.level().getServer()).getPrices();
         ItemPickerUi.open(player, "Check an item's value", ItemPickerUi.Source.INVENTORY_AND_ALL, null,
                 (picker, choice) -> {
+                    if (!EconomyConfig.get().worthEnabled) {
+                        open(picker);
+                        return;
+                    }
+
                     PriceRegistry.PriceEntry entry = prices.resolve(choice.prototype());
                     String name = choice.prototype().getHoverName().getString();
                     if (entry == null || (entry.unitBuy() <= 0 && entry.unitSell() <= 0)) {
@@ -188,9 +198,11 @@ public final class HubUi {
             container.setItem(TOP, MenuUiSupport.button(Items.GOLDEN_APPLE, "Top Balances", ChatFormatting.GOLD,
                     MenuUiSupport.hint("See who is richest on the server.")));
 
-            container.setItem(WORTH, MenuUiSupport.button(Items.SPYGLASS, "Item Value", ChatFormatting.AQUA,
-                    MenuUiSupport.hint("Look up what an item buys"),
-                    MenuUiSupport.hint("and sells for.")));
+            if (config.worthEnabled) {
+                container.setItem(WORTH, MenuUiSupport.button(Items.SPYGLASS, "Item Value", ChatFormatting.AQUA,
+                        MenuUiSupport.hint("Look up what an item buys"),
+                        MenuUiSupport.hint("and sells for.")));
+            }
 
             container.setItem(DELIVERIES, MenuUiSupport.button(Items.ENDER_CHEST, "Deliveries",
                     ChatFormatting.LIGHT_PURPLE,
@@ -252,8 +264,10 @@ public final class HubUi {
                     startPay(viewer);
                 }
                 case WORTH -> {
-                    viewer.closeContainer();
-                    startWorth(viewer);
+                    if (config.worthEnabled) {
+                        viewer.closeContainer();
+                        startWorth(viewer);
+                    }
                 }
                 case DAILY -> {
                     if (eco.claimDaily(viewer.getUUID())) {

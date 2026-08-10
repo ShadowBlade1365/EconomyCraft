@@ -2,6 +2,7 @@ package com.reazip.economycraft;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import com.mojang.logging.LogUtils;
 import com.reazip.economycraft.orders.OrderManager;
 import com.reazip.economycraft.shop.ShopManager;
 import com.reazip.economycraft.util.AsyncFileWriter;
@@ -11,22 +12,30 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.players.NameAndId;
+import net.minecraft.server.players.UserNameToIdResolver;
+import net.minecraft.util.Util;
 import net.minecraft.world.scores.DisplaySlot;
 import net.minecraft.world.scores.Objective;
 import net.minecraft.world.scores.Scoreboard;
 import net.minecraft.world.scores.ScoreHolder;
 import net.minecraft.world.scores.criteria.ObjectiveCriteria;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.time.LocalDate;
 
 public class EconomyManager {
+    private static final Logger LOGGER = LogUtils.getLogger();
+    private static final Method NEOFORGE_NAME_LOOKUP = findNeoForgeNameLookup();
     private static final Gson GSON = new Gson();
     private static final Type TYPE = new TypeToken<Map<UUID, Long>>(){}.getType();
     private static final Type DAILY_SELL_TYPE = new TypeToken<Map<UUID, DailySellData>>(){}.getType();
@@ -41,7 +50,6 @@ public class EconomyManager {
     private final Map<UUID, Long> balances = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastDaily = new ConcurrentHashMap<>();
     private final Map<UUID, DailySellData> dailySells = new ConcurrentHashMap<>();
-    private volatile Map<UUID, String> diskUserCache = null;
     private final PriceRegistry prices;
 
     private Objective objective;
@@ -49,6 +57,9 @@ public class EconomyManager {
     private final ShopManager shop;
     private final OrderManager orders;
     private final Map<UUID, String> displayed = new ConcurrentHashMap<>();
+    private final Set<UUID> scheduledProfileLookups = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> loggedUnresolvedNames = ConcurrentHashMap.newKeySet();
+    private volatile boolean active = true;
 
     public static final long MAX = 999_999_999L;
 
@@ -67,9 +78,10 @@ public class EconomyManager {
         this.deliveries = new DeliveryManager(server);
         this.shop = new ShopManager(server, deliveries);
         this.orders = new OrderManager(server, deliveries);
-
-        applyScoreboardSettingOnStartup();
         this.prices = new PriceRegistry(server);
+
+        scheduleProfileLookups(balances.keySet());
+        applyScoreboardSettingOnStartup();
     }
 
     public MinecraftServer getServer() {
@@ -77,60 +89,163 @@ public class EconomyManager {
     }
 
     public void detach() {
+        active = false;
         teardownObjective(server.getScoreboard());
     }
 
-    private synchronized void ensureDiskUserCacheLoaded() {
-        if (diskUserCache != null) return;
-        Map<UUID, String> cache = new HashMap<>();
-        try {
-            Path uc = server.getFile("usercache.json");
-            if (!Files.exists(uc)) {
-                diskUserCache = cache;
-                return;
-            }
-
-            String json = Files.readString(uc);
-            UserCacheEntry[] entries = GSON.fromJson(json, UserCacheEntry[].class);
-            if (entries != null) {
-                for (UserCacheEntry e : entries) {
-                    if (e == null || e.uuid == null || e.uuid.isBlank() || e.name == null || e.name.isBlank()) continue;
-                    try {
-                        cache.put(UUID.fromString(e.uuid), e.name);
-                    } catch (IllegalArgumentException ignored) {}
-                }
-            }
-        } catch (IOException ignored) {}
-        diskUserCache = cache;
+    public void deactivate() {
+        active = false;
     }
 
-    private String resolveName(MinecraftServer server, UUID id) {
+    private @Nullable String resolveName(MinecraftServer server, UUID id) {
+        String localName = resolveLocalName(server, id);
+        if (localName != null) return localName;
+
+        scheduleProfileLookup(id);
+        return null;
+    }
+
+    private static @Nullable String resolveLocalName(MinecraftServer server, UUID id) {
         ServerPlayer online = server.getPlayerList().getPlayer(id);
         if (online != null) return IdentityCompat.of(online).name();
-        ensureDiskUserCacheLoaded();
-        String fromDisk = diskUserCache.get(id);
-        if (fromDisk != null && !fromDisk.isBlank()) return fromDisk;
-        return id.toString();
+
+        String cached = resolveCachedName(server.services().nameToIdCache(), id);
+        if (cached != null) return cached;
+
+        String loaderCached = getNeoForgeCachedName(id);
+        if (loaderCached != null) return loaderCached;
+        return null;
+    }
+
+    static @Nullable String resolveCachedName(UserNameToIdResolver cache, UUID id) {
+        return cache.get(id)
+                .map(profile -> profile.name())
+                .filter(name -> !name.isBlank())
+                .orElse(null);
     }
 
     public @Nullable String getBestName(UUID id) {
         return resolveName(server, id);
     }
 
+    public void refreshLeaderboard() {
+        updateLeaderboard();
+    }
+
     public UUID tryResolveUuidByName(String name) {
         if (name == null || name.isBlank()) return null;
+
+        try {
+            return UUID.fromString(name);
+        } catch (IllegalArgumentException ignored) {}
 
         ServerPlayer online = server.getPlayerList().getPlayerByName(name);
         if (online != null) return online.getUUID();
 
-        ensureDiskUserCacheLoaded();
-        for (var e : diskUserCache.entrySet()) {
-            if (name.equalsIgnoreCase(e.getValue())) return e.getKey();
+        UserNameToIdResolver cache = server.services().nameToIdCache();
+        UUID match = null;
+        for (UUID id : balances.keySet()) {
+            String resolved = resolveCachedName(cache, id);
+            if (resolved == null) resolved = getNeoForgeCachedName(id);
+            if (resolved == null) {
+                scheduleProfileLookup(id);
+                continue;
+            }
+            if (!name.equalsIgnoreCase(resolved)) continue;
+            if (match != null && !match.equals(id)) return null;
+            match = id;
+        }
+        return match;
+    }
+
+    private void scheduleProfileLookup(UUID id) {
+        scheduleProfileLookups(List.of(id));
+    }
+
+    private void scheduleProfileLookups(Collection<UUID> ids) {
+        if (!active) return;
+
+        List<UUID> unresolved = new ArrayList<>();
+        for (UUID id : ids) {
+            if (resolveLocalName(server, id) != null) continue;
+
+            if (id.version() != 4) {
+                logUnresolvedName(id);
+            } else if (scheduledProfileLookups.add(id)) {
+                unresolved.add(id);
+            }
+        }
+        if (unresolved.isEmpty()) return;
+
+        CompletableFuture
+                .supplyAsync(() -> fetchProfiles(unresolved), Util.nonCriticalIoPool())
+                .whenComplete((profiles, error) -> {
+                    try {
+                        server.execute(() -> finishProfileLookups(unresolved, profiles, error));
+                    } catch (RuntimeException ignored) {
+                        // The server is already shutting down.
+                    }
+                });
+    }
+
+    private Map<UUID, String> fetchProfiles(Collection<UUID> ids) {
+        Map<UUID, String> profiles = new HashMap<>();
+        for (UUID id : ids) {
+            try {
+                server.services().profileResolver().fetchById(id).ifPresent(profile -> {
+                    var identity = IdentityCompat.of(profile);
+                    if (id.equals(identity.id()) && identity.name() != null && !identity.name().isBlank()) {
+                        profiles.put(id, identity.name());
+                    }
+                });
+            } catch (RuntimeException ignored) {}
+        }
+        return profiles;
+    }
+
+    private void finishProfileLookups(Collection<UUID> requested,
+                                      @Nullable Map<UUID, String> profiles,
+                                      @Nullable Throwable error) {
+        if (!active) return;
+
+        if (error == null && profiles != null) {
+            for (var entry : profiles.entrySet()) {
+                UUID id = entry.getKey();
+                ServerPlayer online = server.getPlayerList().getPlayer(id);
+                String name = online != null ? IdentityCompat.of(online).name() : entry.getValue();
+                server.services().nameToIdCache().add(new NameAndId(id, name));
+            }
         }
 
-        try { return UUID.fromString(name); } catch (IllegalArgumentException ignored) {}
+        for (UUID id : requested) {
+            if (resolveLocalName(server, id) == null) logUnresolvedName(id);
+        }
+        updateLeaderboard();
+    }
 
-        return null;
+    private void logUnresolvedName(UUID id) {
+        if (loggedUnresolvedNames.add(id)) {
+            LOGGER.warn("[EconomyCraft] Hiding unresolved player {} from name-based displays.", id);
+        }
+    }
+
+    private static @Nullable String getNeoForgeCachedName(UUID id) {
+        if (NEOFORGE_NAME_LOOKUP == null) return null;
+        try {
+            Object value = NEOFORGE_NAME_LOOKUP.invoke(null, id);
+            return value instanceof String name && !name.isBlank() ? name : null;
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
+    private static @Nullable Method findNeoForgeNameLookup() {
+        try {
+            Class<?> cache = Class.forName("net.neoforged.neoforge.common.UsernameCache");
+            return cache.getMethod("getLastKnownUsername", UUID.class);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
     }
 
     public Long getBalance(UUID player, boolean newBalanceIfNonExistent) {
@@ -223,14 +338,15 @@ public class EconomyManager {
     }
 
     private void applyScoreboardSettingOnStartup() {
+        Scoreboard board = server.getScoreboard();
+        teardownObjective(board);
+
         if (EconomyConfig.get().scoreboardEnabled) {
             setupObjective();
-        } else {
-            teardownObjective(server.getScoreboard());
         }
     }
 
-    private Objective createBalanceObjective(Scoreboard board) {
+    static Objective createBalanceObjective(Scoreboard board) {
         return board.addObjective(
                 ECO_BALANCE_OBJECTIVE,
                 ObjectiveCriteria.DUMMY,
@@ -252,13 +368,14 @@ public class EconomyManager {
     }
 
     private void teardownObjective(Scoreboard board) {
-        Objective existing = objective != null ? objective : board.getObjective(ECO_BALANCE_OBJECTIVE);
-        if (existing == null) return;
-
-        board.setDisplayObjective(DisplaySlot.SIDEBAR, null);
-        board.removeObjective(existing);
+        removeBalanceObjective(board);
         objective = null;
         displayed.clear();
+    }
+
+    static void removeBalanceObjective(Scoreboard board) {
+        Objective existing = board.getObjective(ECO_BALANCE_OBJECTIVE);
+        if (existing != null) board.removeObjective(existing);
     }
 
     private void setupObjective() {
@@ -276,43 +393,65 @@ public class EconomyManager {
 
         ensureObjective(board);
 
+        syncLeaderboardScores(
+                board,
+                objective,
+                displayed,
+                computeLeaderboard(LEADERBOARD_SIZE)
+        );
+    }
+
+    static void syncLeaderboardScores(
+            Scoreboard board,
+            Objective objective,
+            Map<UUID, String> displayed,
+            List<LeaderboardEntry> entries
+    ) {
         Map<UUID, String> updated = new HashMap<>();
-        for (LeaderboardEntry e : computeLeaderboard(LEADERBOARD_SIZE)) {
-            board.getOrCreatePlayerScore(
-                    ScoreHolder.forNameOnly(e.name()),
-                    objective
-            ).set((int) e.balance());
+        for (LeaderboardEntry e : entries) {
             updated.put(e.id(), e.name());
         }
 
         for (var e : displayed.entrySet()) {
-            if (!updated.containsKey(e.getKey())) {
+            if (!Objects.equals(e.getValue(), updated.get(e.getKey()))) {
                 board.resetSinglePlayerScore(ScoreHolder.forNameOnly(e.getValue()), objective);
             }
         }
+
+        for (LeaderboardEntry e : entries) {
+            board.getOrCreatePlayerScore(
+                    ScoreHolder.forNameOnly(e.name()),
+                    objective
+            ).set((int) e.balance());
+        }
+
         displayed.clear();
         displayed.putAll(updated);
     }
 
     private List<LeaderboardEntry> computeLeaderboard(int limit) {
-        List<Map.Entry<UUID, Long>> sorted = new ArrayList<>(balances.entrySet());
+        List<LeaderboardEntry> sorted = new ArrayList<>();
+        for (var entry : balances.entrySet()) {
+            String name = resolveName(server, entry.getKey());
+            if (name != null && !name.isBlank()) {
+                sorted.add(new LeaderboardEntry(entry.getKey(), name, entry.getValue()));
+            }
+        }
         sorted.sort((a, b) -> {
-            int c = Long.compare(b.getValue(), a.getValue());
+            int c = Long.compare(b.balance(), a.balance());
             if (c != 0) return c;
 
-            String an = resolveName(server, a.getKey());
-            String bn = resolveName(server, b.getKey());
-            c = String.CASE_INSENSITIVE_ORDER.compare(an, bn);
+            c = String.CASE_INSENSITIVE_ORDER.compare(a.name(), b.name());
             if (c != 0) return c;
 
-            return a.getKey().compareTo(b.getKey());
+            return a.id().compareTo(b.id());
         });
 
-        List<LeaderboardEntry> result = new ArrayList<>();
-        for (var e : sorted.stream().limit(limit).toList()) {
-            result.add(new LeaderboardEntry(e.getKey(), resolveName(server, e.getKey()), e.getValue()));
-        }
-        return result;
+        return new ArrayList<>(sorted.subList(0, Math.min(limit, sorted.size())));
+    }
+
+    public List<LeaderboardEntry> getLeaderboardEntries(int limit) {
+        return computeLeaderboard(Math.max(0, limit));
     }
 
     public @Nullable LeaderboardEntry getLeaderboardEntry(int rank) {
@@ -433,11 +572,6 @@ public class EconomyManager {
 
     private long clamp(long value) {
         return Math.clamp(value, 0, MAX);
-    }
-
-    private static final class UserCacheEntry {
-        String name;
-        String uuid;
     }
 
     private record DailySellData(long day, long amount) {}
